@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 ubuntu:22.04
+FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ============================================================================
@@ -136,7 +136,7 @@ RUN mkdir -p /etc/docker && cat > /etc/docker/daemon.json <<'EOF'
 EOF
 
 # ============================================================================
-# STEP 14 — Fix iptables legacy mode (avoids nftables conflicts)
+# STEP 14 — Fix iptables legacy mode
 # ============================================================================
 RUN update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true && \
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
@@ -148,22 +148,21 @@ RUN pip3 install --upgrade pip && \
     pip3 install certbot certbot-nginx 2>/dev/null || true
 
 # ============================================================================
-# STEP 16 — Pre-create VNC xstartup so XFCE loads on connect
+# STEP 16 — VNC xstartup (launches XFCE inside the display)
 # ============================================================================
 RUN mkdir -p /root/.vnc && \
     touch /root/.Xauthority && \
     cat > /root/.vnc/xstartup <<'EOF'
 #!/bin/bash
 export XKL_XMODMAP_DISABLE=1
-export DISPLAY=:1
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
-/usr/bin/startxfce4 --replace &
+startxfce4 &
 EOF
 RUN chmod +x /root/.vnc/xstartup
 
 # ============================================================================
-# STEP 17 — Write supervisord.conf into image
+# STEP 17 — supervisord.conf
 # ============================================================================
 RUN mkdir -p /var/log/supervisor && cat > /etc/supervisor/conf.d/supervisord.conf <<'EOF'
 [supervisord]
@@ -249,31 +248,47 @@ startsecs=3
 EOF
 
 # ============================================================================
-# STEP 18 — Write VNC start script into image
-# The key fix: use vncserver (not Xtigervnc directly) so xstartup is called
-# and XFCE actually launches inside the display
+# STEP 18 — VNC start script
+# KEY FIX: Use Xtigervnc directly + run xstartup manually in background
+# This avoids the vncserver wrapper -fg issue that caused exit 255
 # ============================================================================
 RUN cat > /usr/local/bin/start-vnc.sh <<'EOF'
 #!/bin/bash
 export HOME=/root
 export USER=root
+export DISPLAY=:1
 
 # Clean stale locks
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix
 
-# Start vncserver — this calls xstartup which launches XFCE
-vncserver :1 \
+# Start Xtigervnc (X server only, foreground)
+/usr/bin/Xtigervnc :1 \
     -localhost no \
     -SecurityTypes None \
     -geometry 1280x800 \
     -depth 24 \
-    --I-KNOW-THIS-IS-INSECURE \
-    -fg
+    -rfbport 5901 \
+    -desktop "Ubuntu Desktop" \
+    -AlwaysShared &
+
+VNC_PID=$!
+
+# Wait for X server to be ready
+sleep 3
+
+# Now launch XFCE inside the display
+export DISPLAY=:1
+/root/.vnc/xstartup &
+
+# Keep script alive by waiting on VNC process
+wait $VNC_PID
 EOF
 RUN chmod +x /usr/local/bin/start-vnc.sh
 
 # ============================================================================
-# STEP 19 — Write main startup script into image
+# STEP 19 — Main startup script
 # ============================================================================
 RUN cat > /start.sh <<'EOF'
 #!/bin/bash
