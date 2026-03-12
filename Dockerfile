@@ -148,7 +148,22 @@ RUN pip3 install --upgrade pip && \
     pip3 install certbot certbot-nginx 2>/dev/null || true
 
 # ============================================================================
-# STEP 16 — Write supervisord.conf directly into image
+# STEP 16 — Pre-create VNC xstartup so XFCE loads on connect
+# ============================================================================
+RUN mkdir -p /root/.vnc && \
+    touch /root/.Xauthority && \
+    cat > /root/.vnc/xstartup <<'EOF'
+#!/bin/bash
+export XKL_XMODMAP_DISABLE=1
+export DISPLAY=:1
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+/usr/bin/startxfce4 --replace &
+EOF
+RUN chmod +x /root/.vnc/xstartup
+
+# ============================================================================
+# STEP 17 — Write supervisord.conf into image
 # ============================================================================
 RUN mkdir -p /var/log/supervisor && cat > /etc/supervisor/conf.d/supervisord.conf <<'EOF'
 [supervisord]
@@ -234,37 +249,31 @@ startsecs=3
 EOF
 
 # ============================================================================
-# STEP 17 — Write VNC startup script directly into image
+# STEP 18 — Write VNC start script into image
+# The key fix: use vncserver (not Xtigervnc directly) so xstartup is called
+# and XFCE actually launches inside the display
 # ============================================================================
 RUN cat > /usr/local/bin/start-vnc.sh <<'EOF'
 #!/bin/bash
 export HOME=/root
 export USER=root
-export DISPLAY=:1
+
+# Clean stale locks
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-touch /root/.Xauthority
-mkdir -p /root/.vnc
-cat > /root/.vnc/xstartup <<'VNCEOF'
-#!/bin/bash
-export XKL_XMODMAP_DISABLE=1
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-exec startxfce4
-VNCEOF
-chmod +x /root/.vnc/xstartup
-exec /usr/bin/Xtigervnc \
+
+# Start vncserver — this calls xstartup which launches XFCE
+vncserver :1 \
     -localhost no \
     -SecurityTypes None \
     -geometry 1280x800 \
     -depth 24 \
-    -rfbport 5901 \
-    -desktop "Ubuntu Desktop" \
-    :1
+    --I-KNOW-THIS-IS-INSECURE \
+    -fg
 EOF
 RUN chmod +x /usr/local/bin/start-vnc.sh
 
 # ============================================================================
-# STEP 18 — Write main startup script directly into image
+# STEP 19 — Write main startup script into image
 # ============================================================================
 RUN cat > /start.sh <<'EOF'
 #!/bin/bash
