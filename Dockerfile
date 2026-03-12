@@ -7,7 +7,7 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     git unzip tar zip software-properties-common tzdata \
     apt-transport-https net-tools iproute2 iputils-ping dnsutils \
     openssl iptables vim nano htop procps psmisc lsof \
-    python3 python3-pip netcat-openbsd socat cron \
+    python3 python3-pip netcat-traditional socat cron \
     build-essential xterm dbus-x11 \
     x11-utils x11-xserver-utils x11-apps && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -35,7 +35,7 @@ RUN apt-get update -y && apt-get install -y mysql-server mysql-client && \
 # PostgreSQL 16
 RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
     | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt jammy-pgdg main" \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
     > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update -y && apt-get install -y postgresql-16 postgresql-client-16 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
