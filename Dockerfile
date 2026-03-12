@@ -45,7 +45,7 @@ RUN add-apt-repository ppa:mozillateam/ppa -y && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
-# STEP 4 — PHP 8.3 + all extensions Pelican Panel needs
+# STEP 4 — PHP 8.3 + all extensions Pelican needs
 # ============================================================================
 RUN add-apt-repository ppa:ondrej/php -y && \
     apt-get update -y && \
@@ -59,6 +59,11 @@ RUN add-apt-repository ppa:ondrej/php -y && \
     php8.3-opcache php8.3-redis \
     php8.3-tokenizer php8.3-fileinfo && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Fix php-fpm to run as root (prevents exit status 78 in containers)
+RUN sed -i 's/^user = www-data/user = root/' /etc/php/8.3/fpm/pool.d/www.conf && \
+    sed -i 's/^group = www-data/group = root/' /etc/php/8.3/fpm/pool.d/www.conf && \
+    mkdir -p /run/php
 
 # ============================================================================
 # STEP 5 — Nginx
@@ -92,7 +97,7 @@ RUN apt-get update -y && apt-get install -y sqlite3 libsqlite3-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
-# STEP 9 — Redis (for Pelican queue/cache)
+# STEP 9 — Redis
 # ============================================================================
 RUN apt-get update -y && apt-get install -y redis-server && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -101,18 +106,17 @@ RUN apt-get update -y && apt-get install -y redis-server && \
 # STEP 10 — Composer
 # ============================================================================
 RUN curl -sS https://getcomposer.org/installer | php -- \
-    --install-dir=/usr/local/bin --filename=composer && \
-    composer --version
+    --install-dir=/usr/local/bin --filename=composer
 
 # ============================================================================
-# STEP 11 — Node.js 20 + npm (needed by some Pelican assets)
+# STEP 11 — Node.js 20
 # ============================================================================
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ============================================================================
-# STEP 12 — Docker (for Wings / Pelican game servers)
+# STEP 12 — Docker
 # ============================================================================
 RUN curl -fsSL https://get.docker.com | sh
 
@@ -132,47 +136,170 @@ RUN mkdir -p /etc/docker && cat > /etc/docker/daemon.json <<'EOF'
 EOF
 
 # ============================================================================
-# STEP 14 — Fix iptables to legacy mode (avoids nftables conflicts)
+# STEP 14 — Fix iptables legacy mode (avoids nftables conflicts)
 # ============================================================================
 RUN update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true && \
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
 
 # ============================================================================
-# STEP 15 — Certbot (for SSL when ready)
+# STEP 15 — Certbot
 # ============================================================================
-RUN python3 -m pip install --upgrade pip && \
+RUN pip3 install --upgrade pip && \
     pip3 install certbot certbot-nginx 2>/dev/null || true
 
 # ============================================================================
-# STEP 16 — VNC + XFCE setup
+# STEP 16 — Write supervisord.conf directly into image
 # ============================================================================
-RUN touch /root/.Xauthority && \
-    mkdir -p /root/.vnc && \
-    printf '#!/bin/bash\nexport XKL_XMODMAP_DISABLE=1\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nstartxfce4\n' \
-        > /root/.vnc/xstartup && \
-    chmod +x /root/.vnc/xstartup
+RUN mkdir -p /var/log/supervisor && cat > /etc/supervisor/conf.d/supervisord.conf <<'EOF'
+[supervisord]
+nodaemon=true
+logfile=/var/log/supervisor/supervisord.log
+pidfile=/var/run/supervisord.pid
+user=root
+
+[program:dockerd]
+command=dockerd --config-file /etc/docker/daemon.json
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/dockerd.log
+stderr_logfile=/var/log/supervisor/dockerd.log
+priority=1
+startsecs=3
+
+[program:mysql]
+command=/usr/bin/mysqld_safe
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/mysql.log
+stderr_logfile=/var/log/supervisor/mysql.log
+priority=10
+startsecs=5
+
+[program:postgresql]
+command=/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main -c config_file=/etc/postgresql/16/main/postgresql.conf
+user=postgres
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/postgresql.log
+stderr_logfile=/var/log/supervisor/postgresql.log
+priority=10
+startsecs=5
+
+[program:redis]
+command=/usr/bin/redis-server /etc/redis/redis.conf --daemonize no
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/redis.log
+stderr_logfile=/var/log/supervisor/redis.log
+priority=10
+startsecs=2
+
+[program:php-fpm]
+command=/usr/sbin/php-fpm8.3 -F -R
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/php-fpm.log
+stderr_logfile=/var/log/supervisor/php-fpm.log
+priority=20
+startsecs=3
+environment=HOME="/root",USER="root"
+
+[program:nginx]
+command=/usr/sbin/nginx -g "daemon off;"
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/nginx.log
+stderr_logfile=/var/log/supervisor/nginx.log
+priority=30
+startsecs=2
+
+[program:vnc]
+command=/usr/local/bin/start-vnc.sh
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/vnc.log
+stderr_logfile=/var/log/supervisor/vnc.log
+priority=40
+startsecs=5
+environment=HOME="/root",USER="root",DISPLAY=":1"
+
+[program:novnc]
+command=/usr/bin/websockify --web=/usr/share/novnc/ --cert=/root/self.pem 6080 localhost:5901
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/novnc.log
+stderr_logfile=/var/log/supervisor/novnc.log
+priority=50
+startsecs=3
+EOF
 
 # ============================================================================
-# STEP 17 — Supervisor config (keeps all services alive automatically)
+# STEP 17 — Write VNC startup script directly into image
 # ============================================================================
-RUN mkdir -p /var/log/supervisor
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+RUN cat > /usr/local/bin/start-vnc.sh <<'EOF'
+#!/bin/bash
+export HOME=/root
+export USER=root
+export DISPLAY=:1
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+touch /root/.Xauthority
+mkdir -p /root/.vnc
+cat > /root/.vnc/xstartup <<'VNCEOF'
+#!/bin/bash
+export XKL_XMODMAP_DISABLE=1
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec startxfce4
+VNCEOF
+chmod +x /root/.vnc/xstartup
+exec /usr/bin/Xtigervnc \
+    -localhost no \
+    -SecurityTypes None \
+    -geometry 1280x800 \
+    -depth 24 \
+    -rfbport 5901 \
+    -desktop "Ubuntu Desktop" \
+    :1
+EOF
+RUN chmod +x /usr/local/bin/start-vnc.sh
 
 # ============================================================================
-# STEP 18 — Startup script
+# STEP 18 — Write main startup script directly into image
 # ============================================================================
-COPY start.sh /start.sh
+RUN cat > /start.sh <<'EOF'
+#!/bin/bash
+set -e
+echo "============================================"
+echo "  Starting Ubuntu VNC + Pelican Environment"
+echo "============================================"
+
+# DBus
+mkdir -p /run/dbus
+dbus-daemon --system --fork 2>/dev/null || true
+
+# PostgreSQL first-run init
+if [ ! -f /var/lib/postgresql/16/main/PG_VERSION ]; then
+    echo "[INIT] Initialising PostgreSQL..."
+    su - postgres -c "/usr/lib/postgresql/16/bin/initdb -D /var/lib/postgresql/16/main" 2>/dev/null || true
+fi
+
+# SSL cert for noVNC
+if [ ! -f /root/self.pem ]; then
+    openssl req -new -subj "/C=US/CN=localhost" -x509 -days 365 -nodes \
+        -out /root/self.pem -keyout /root/self.pem 2>/dev/null
+fi
+
+# Clean stale VNC locks
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+
+echo "[START] Launching all services..."
+exec /usr/bin/supervisord -n -c /etc/supervisor/conf.d/supervisord.conf
+EOF
 RUN chmod +x /start.sh
 
-# ── Ports ────────────────────────────────────────────────────────────────────
-# 5901  = VNC direct
-# 6080  = noVNC (browser desktop access)
-# 80    = Nginx / Pelican Panel HTTP
-# 443   = Nginx / Pelican Panel HTTPS
-# 3306  = MySQL
-# 5432  = PostgreSQL
-# 6379  = Redis
-# 8080  = Pelican Wings
+# ── Ports ─────────────────────────────────────────────────────────────────────
+# 5901 = VNC | 6080 = noVNC browser | 80/443 = Nginx | 3306 = MySQL
+# 5432 = PostgreSQL | 6379 = Redis | 8080 = Pelican Wings
 EXPOSE 5901 6080 80 443 3306 5432 6379 8080
 
 CMD ["/start.sh"]
